@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>음성 → 텍스트 → 영어 번역 → 읽어주기</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px 20px;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Malgun Gothic', sans-serif;
+    background: #f7f7f7; color: #262626; display: flex; justify-content: center;
+  }
+  .wrap { width: 100%; max-width: 1100px; }
+  h1 { font-size: 28px; font-weight: 700; margin: 0 0 8px; }
+  .sub { font-size: 14px; color: #6b6b6b; margin-bottom: 24px; line-height: 1.6; }
+  .panel { background: #fff; border: 1px solid #e6e6e6; padding: 24px; margin-bottom: 16px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  .row.tts { background: #f0f6ff; padding: 12px; border: 1px solid #cfe0fa; }
+  button {
+    height: 46px; padding: 0 22px; border: 0; cursor: pointer;
+    font-size: 14px; font-weight: 700; letter-spacing: .5px;
+    background: #1c69d4; color: #fff; transition: background .15s;
+  }
+  button:hover:not(:disabled) { background: #0653b6; }
+  button:disabled { background: #d6d6d6; color: #6b6b6b; cursor: not-allowed; }
+  button.ghost { background: #fff; color: #262626; border: 1px solid #ccc; }
+  button.ghost:hover:not(:disabled) { background: #ebebeb; }
+  button.stop { background: #dc2626; }
+  button.stop:hover:not(:disabled) { background: #b91c1c; }
+  select, label.chk, label.rng {
+    height: 46px; padding: 0 12px; border: 1px solid #ccc; background: #fff;
+    font-size: 14px; display: inline-flex; align-items: center; gap: 8px;
+  }
+  label.rng input { width: 110px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700;
+    letter-spacing: .5px; padding: 8px 14px; background: #ebebeb; color: #3c3c3c;
+  }
+  .badge.on { background: #fee2e2; color: #dc2626; }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.warn { background: #fef3c7; color: #92400e; }
+  .badge.speak { background: #dbeafe; color: #1e40af; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #9a9a9a; }
+  .badge.on .dot { background: #dc2626; animation: pulse 1s infinite; }
+  .badge.speak .dot { background: #1c69d4; animation: pulse .7s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.25} }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 800px) { .grid { grid-template-columns: 1fr; } }
+  .col h2 { font-size: 13px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; color: #6b6b6b; margin: 0 0 8px; }
+  textarea {
+    width: 100%; min-height: 280px; padding: 16px; resize: vertical;
+    border: 1px solid #e6e6e6; font-size: 16px; line-height: 1.7; font-family: inherit; color: #1a1a1a;
+  }
+  #translated { background: #f0f6ff; }
+  .interim { color: #9a9a9a; font-style: italic; min-height: 24px; font-size: 15px; margin-top: 8px; }
+  .meta { display: flex; justify-content: space-between; font-size: 12px; color: #6b6b6b; margin-top: 8px; }
+  .note { background: #fef3c7; border: 1px solid #f59e0b; padding: 14px 16px; font-size: 13px; line-height: 1.6; }
+  .err { background: #fee2e2; border: 1px solid #dc2626; color: #991b1b; padding: 14px 16px; font-size: 13px; display: none; margin-bottom: 16px; }
+  progress { width: 160px; height: 10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>음성 → 텍스트 → 영어 번역 → 읽어주기</h1>
+  <p class="sub">
+    음성 인식 <strong>Web Speech API</strong> · 번역 <strong>Translator API</strong>(온디바이스, Chrome 138+) · 읽어주기 <strong>Speech Synthesis API</strong>.
+    외부 라이브러리·API 키 없이 브라우저 내장 기능만 사용합니다.
+  </p>
+
+  <div class="err" id="err"></div>
+
+  <div class="panel">
+    <div class="row">
+      <button id="startBtn">● 녹음 시작</button>
+      <button id="stopBtn" class="stop" disabled>■ 중지</button>
+      <select id="lang">
+        <option value="ko-KR" selected>한국어</option>
+        <option value="ja-JP">日本語</option>
+        <option value="zh-CN">中文(简体)</option>
+        <option value="es-ES">Español</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="cont" checked> 연속 인식</label>
+      <label class="chk"><input type="checkbox" id="liveInterim" checked> 중간 결과도 번역</label>
+      <span class="badge" id="status"><span class="dot"></span>대기 중</span>
+      <span class="badge" id="trStatus">번역기 확인 중…</span>
+      <progress id="dl" value="0" max="1" style="display:none"></progress>
+    </div>
+
+    <!-- ===== 읽어주기(TTS) 설정 ===== -->
+    <div class="row tts">
+      <label class="chk"><input type="checkbox" id="autoSpeak" checked> 번역되면 자동으로 읽기</label>
+      <label class="chk"><input type="checkbox" id="pauseWhileSpeak" checked> 읽는 동안 마이크 일시정지</label>
+      <select id="voice" title="영어 음성 선택"><option value="">음성 불러오는 중…</option></select>
+      <label class="rng">속도 <input type="range" id="rate" min="0.5" max="2" step="0.1" value="1"> <span id="rateV">1.0</span></label>
+      <label class="rng">높낮이 <input type="range" id="pitch" min="0.5" max="2" step="0.1" value="1"> <span id="pitchV">1.0</span></label>
+      <button class="ghost" id="speakAllBtn">▶ 영문 전체 읽기</button>
+      <button class="ghost" id="speakStopBtn">⏹ 읽기 중지</button>
+      <span class="badge" id="ttsStatus"><span class="dot"></span>TTS 대기</span>
+    </div>
+
+    <div class="grid">
+      <div class="col">
+        <h2>원문 (Source)</h2>
+        <textarea id="output" placeholder="인식된 텍스트가 여기에 표시됩니다..."></textarea>
+        <div class="interim" id="interim"></div>
+        <div class="meta"><span id="count">0자</span><span id="time">—</span></div>
+      </div>
+      <div class="col">
+        <h2>English (Translated)</h2>
+        <textarea id="translated" placeholder="Translated text will appear here..." readonly></textarea>
+        <div class="interim" id="interimTr"></div>
+        <div class="meta"><span id="countTr">0 chars</span><span id="trTime">—</span></div>
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:16px; margin-bottom:0;">
+      <button class="ghost" id="copyBtn">원문 복사</button>
+      <button class="ghost" id="copyTrBtn">영문 복사</button>
+      <button class="ghost" id="saveBtn">TXT 저장 (원문+영문)</button>
+      <button class="ghost" id="retransBtn">원문 전체 재번역</button>
+      <button class="ghost" id="clearBtn">전체 지우기</button>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>참고</strong> —
+    ① 스피커로 들으면 마이크가 TTS 소리를 다시 인식할 수 있습니다. <strong>이어폰 사용</strong>을 권장하며, "읽는 동안 마이크 일시정지" 옵션이 이를 막아줍니다.<br>
+    ② Translator API는 Chrome 138+ 데스크톱에서 동작합니다. 영어 음성은 OS에 설치된 음성 목록을 사용합니다(Windows: Microsoft, macOS: Samantha 등).<br>
+    ③ <code>file://</code>로 열면 마이크·번역 모델이 차단될 수 있으니 <code>localhost</code> 또는 <code>https</code>로 실행하세요.
+  </div>
+</div>
+
+<script>
+(function () {
+  const $ = id => document.getElementById(id);
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const startBtn = $('startBtn'), stopBtn = $('stopBtn'),
+        out = $('output'), trOut = $('translated'),
+        interim = $('interim'), interimTr = $('interimTr'),
+        status = $('status'), trStatus = $('trStatus'), ttsStatus = $('ttsStatus'),
+        errBox = $('err'), dl = $('dl');
+
+  function showErr(msg) { errBox.style.display = 'block'; errBox.textContent = msg; }
+  function setStatus(text, on) { status.className = 'badge' + (on ? ' on' : ''); status.innerHTML = '<span class="dot"></span>' + text; }
+  function setTr(text, cls) { trStatus.className = 'badge ' + (cls || ''); trStatus.textContent = text; }
+  function setTts(text, cls) { ttsStatus.className = 'badge ' + (cls || ''); ttsStatus.innerHTML = '<span class="dot"></span>' + text; }
+  function updateCount() { $('count').textContent = out.value.length + '자'; $('countTr').textContent = trOut.value.length + ' chars'; }
+
+  if (!SR) { showErr('이 브라우저는 Web Speech API를 지원하지 않습니다. Chrome 또는 Edge 최신 버전을 사용해 주세요.'); startBtn.disabled = true; return; }
+
+  /* ================= TTS (Speech Synthesis) ================= */
+  const synth = window.speechSynthesis;
+  let voices = [], speaking = false, pausedForTts = false;
+
+  function loadVoices() {
+    voices = synth.getVoices().filter(v => /^en[-_]/i.test(v.lang));
+    const sel = $('voice'); sel.innerHTML = '';
+    if (!voices.length) { sel.innerHTML = '<option value="">영어 음성 없음</option>'; return; }
+    voices.forEach((v, i) => {
+      const o = document.createElement('option');
+      o.value = i; o.textContent = `${v.name} (${v.lang})${v.default ? ' ★' : ''}`;
+      sel.appendChild(o);
+    });
+    // en-US 우선 선택
+    const us = voices.findIndex(v => /en[-_]US/i.test(v.lang));
+    sel.value = us >= 0 ? us : 0;
+  }
+  if (synth) { loadVoices(); synth.onvoiceschanged = loadVoices; }
+  else setTts('TTS 미지원 브라우저', 'warn');
+
+  $('rate').oninput = e => $('rateV').textContent = Number(e.target.value).toFixed(1);
+  $('pitch').oninput = e => $('pitchV').textContent = Number(e.target.value).toFixed(1);
+
+  // 읽기 큐: 문장 순서 보장
+  const ttsQueue = [];
+  function speak(text) {
+    if (!synth || !text.trim()) return;
+    ttsQueue.push(text.trim());
+    if (!speaking) nextSpeak();
+  }
+  function nextSpeak() {
+    const text = ttsQueue.shift();
+    if (!text) { onSpeakEnd(); return; }
+    const u = new SpeechSynthesisUtterance(text);
+    const v = voices[$('voice').value];
+    if (v) u.voice = v;
+    u.lang = v ? v.lang : 'en-US';
+    u.rate = Number($('rate').value);
+    u.pitch = Number($('pitch').value);
+    u.onstart = () => { speaking = true; setTts('읽는 중: ' + text.slice(0, 30) + (text.length > 30 ? '…' : ''), 'speak'); pauseMicForTts(); };
+    u.onend = nextSpeak;
+    u.onerror = nextSpeak;
+    synth.speak(u);
+  }
+  function onSpeakEnd() {
+    speaking = false;
+    setTts('TTS 대기', '');
+    resumeMicAfterTts();
+  }
+  function stopSpeak() { ttsQueue.length = 0; synth && synth.cancel(); onSpeakEnd(); }
+
+  // 마이크가 TTS 소리를 재인식하지 않도록 읽는 동안 인식 일시정지
+  function pauseMicForTts() {
+    if ($('pauseWhileSpeak').checked && listening && !pausedForTts) {
+      pausedForTts = true;
+      try { rec.abort(); } catch (_) {}
+      setStatus('읽기 중 일시정지', false);
+    }
+  }
+  function resumeMicAfterTts() {
+    if (pausedForTts) {
+      pausedForTts = false;
+      if (!manualStop) { setTimeout(() => { try { rec = build(); rec.start(); } catch (_) {} }, 200); }
+    }
+  }
+
+  $('speakStopBtn').onclick = stopSpeak;
+  $('speakAllBtn').onclick = () => {
+    if (!trOut.value.trim()) return;
+    stopSpeak();
+    trOut.value.split(/(?<=[.!?])\s+|\n+/).filter(s => s.trim()).forEach(speak);
+  };
+
+  /* ================= 번역기 (Translator API) ================= */
+  let translator = null, trReady = false, trSrc = null;
+  function srcCode() { return $('lang').value.split('-')[0]; }
+
+  async function initTranslator() {
+    const src = srcCode();
+    if (trReady && trSrc === src) return true;
+    translator = null; trReady = false;
+    if (!('Translator' in self)) { setTr('번역 미지원 브라우저 (Chrome 138+ 필요)', 'warn'); return false; }
+    try {
+      const avail = await Translator.availability({ sourceLanguage: src, targetLanguage: 'en' });
+      if (avail === 'unavailable') { setTr(`${src}→en 번역 모델 사용 불가`, 'warn'); return false; }
+      if (avail !== 'available') { setTr('번역 모델 다운로드 중…', 'warn'); dl.style.display = ''; }
+      translator = await Translator.create({
+        sourceLanguage: src, targetLanguage: 'en',
+        monitor(m) { m.addEventListener('downloadprogress', e => { dl.value = e.loaded; }); }
+      });
+      dl.style.display = 'none'; trReady = true; trSrc = src;
+      setTr(`번역 준비됨 (${src} → en, 온디바이스)`, 'ok');
+      return true;
+    } catch (e) {
+      dl.style.display = 'none'; setTr('번역기 초기화 실패', 'warn');
+      showErr('번역기 초기화 실패: ' + (e.message || e));
+      return false;
+    }
+  }
+
+  let queue = Promise.resolve();
+  function translateFinal(text, { read = true } = {}) {
+    queue = queue.then(async () => {
+      if (!trReady) return;
+      const t0 = performance.now();
+      try {
+        const en = (await translator.translate(text)).trim();
+        trOut.value += (trOut.value && !/\s$/.test(trOut.value) ? ' ' : '') + en;
+        trOut.scrollTop = trOut.scrollHeight;
+        $('trTime').textContent = Math.round(performance.now() - t0) + ' ms';
+        updateCount();
+        if (read && $('autoSpeak').checked) speak(en);     // ← 번역 즉시 읽기
+      } catch (e) { console.warn('translate error', e); }
+    });
+    return queue;
+  }
+
+  let interimTimer = null, interimSeq = 0;
+  function translateInterim(text) {
+    if (!$('liveInterim').checked || !trReady) { interimTr.textContent = ''; return; }
+    clearTimeout(interimTimer);
+    if (!text.trim()) { interimTr.textContent = ''; return; }
+    interimTimer = setTimeout(async () => {
+      const seq = ++interimSeq;
+      try { const en = await translator.translate(text); if (seq === interimSeq) interimTr.textContent = en; } catch (_) {}
+    }, 250);
+  }
+
+  /* ================= 음성 인식 ================= */
+  let rec = null, listening = false, manualStop = false, startedAt = null, timer = null;
+
+  function tick() {
+    if (!startedAt) return;
+    const s = Math.floor((Date.now() - startedAt) / 1000);
+    $('time').textContent = String(Math.floor(s/60)).padStart(2,'0') + ':' + String(s%60).padStart(2,'0');
+  }
+
+  function build() {
+    const r = new SR();
+    r.lang = $('lang').value;
+    r.continuous = $('cont').checked;
+    r.interimResults = true;
+    r.maxAlternatives = 1;
+
+    r.onstart = () => {
+      listening = true; startBtn.disabled = true; stopBtn.disabled = false;
+      setStatus('인식 중...', true);
+      startedAt = startedAt || Date.now();
+      clearInterval(timer); timer = setInterval(tick, 500);
+    };
+
+    r.onresult = (e) => {
+      let finalText = '', interimText = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalText += t; else interimText += t;
+      }
+      if (finalText) {
+        const seg = finalText.trim();
+        out.value += (out.value && !/\s$/.test(out.value) ? ' ' : '') + seg;
+        out.scrollTop = out.scrollHeight;
+        updateCount();
+        interimTr.textContent = '';
+        translateFinal(seg);
+      }
+      interim.textContent = interimText;
+      translateInterim(interimText);
+    };
+
+    r.onerror = (e) => {
+      const msgs = {
+        'audio-capture': '마이크를 찾을 수 없습니다. 연결 상태를 확인하세요.',
+        'not-allowed': '마이크 권한이 거부되었습니다. 주소창 자물쇠 아이콘에서 허용해 주세요.',
+        'network': '네트워크 오류가 발생했습니다.'
+      };
+      if (!['no-speech','aborted'].includes(e.error)) showErr(msgs[e.error] || ('오류: ' + e.error));
+      if (e.error === 'not-allowed') manualStop = true;
+    };
+
+    r.onend = () => {
+      listening = false; interim.textContent = ''; interimTr.textContent = '';
+      clearInterval(timer);
+      if (pausedForTts) return;                       // TTS 끝나면 resumeMicAfterTts가 재시작
+      if (!manualStop && $('cont').checked) {
+        setTimeout(() => { try { rec.start(); } catch (_) {} }, 250);
+      } else {
+        startBtn.disabled = false; stopBtn.disabled = true;
+        setStatus('대기 중', false); startedAt = null;
+      }
+    };
+    return r;
+  }
+
+  startBtn.onclick = async () => {
+    errBox.style.display = 'none';
+    manualStop = false;
+    await initTranslator();
+    rec = build();
+    try { rec.start(); } catch (_) {}
+  };
+  stopBtn.onclick = () => {
+    manualStop = true; pausedForTts = false;
+    if (rec) rec.stop();
+    startBtn.disabled = false; stopBtn.disabled = true; setStatus('대기 중', false); startedAt = null;
+  };
+
+  $('lang').onchange = async () => {
+    trReady = false;
+    if (listening) { manualStop = true; rec.stop(); setTimeout(() => startBtn.click(), 300); }
+    else await initTranslator();
+  };
+
+  $('retransBtn').onclick = async () => {
+    if (!out.value.trim()) return;
+    if (!(await initTranslator())) return;
+    trOut.value = ''; setTr('전체 재번역 중…', 'warn');
+    const sentences = out.value.split(/(?<=[.!?。？！])\s+|\n+/).filter(s => s.trim());
+    for (const s of sentences) await translateFinal(s.trim(), { read: false });
+    setTr(`번역 준비됨 (${srcCode()} → en, 온디바이스)`, 'ok');
+  };
+
+  const flash = (btn, label) => { const o = btn.textContent; btn.textContent = label; setTimeout(() => btn.textContent = o, 1200); };
+  $('copyBtn').onclick = async () => { if (out.value) { await navigator.clipboard.writeText(out.value); flash($('copyBtn'), '복사됨!'); } };
+  $('copyTrBtn').onclick = async () => { if (trOut.value) { await navigator.clipboard.writeText(trOut.value); flash($('copyTrBtn'), 'Copied!'); } };
+
+  $('saveBtn').onclick = () => {
+    if (!out.value && !trOut.value) return;
+    const body = '=== 원문 (' + $('lang').value + ') ===\n' + out.value + '\n\n=== English ===\n' + trOut.value + '\n';
+    const blob = new Blob([body], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'transcript_' + new Date().toISOString().slice(0,19).replace(/[:T]/g,'-') + '.txt';
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+
+  $('clearBtn').onclick = () => { stopSpeak(); out.value = ''; trOut.value = ''; interim.textContent = ''; interimTr.textContent = ''; updateCount(); };
+  out.oninput = updateCount;
+
+  (async () => {
+    if (!('Translator' in self)) { setTr('번역 미지원 브라우저 (Chrome 138+ 필요)', 'warn'); return; }
+    try {
+      const a = await Translator.availability({ sourceLanguage: srcCode(), targetLanguage: 'en' });
+      setTr(a === 'available' ? '번역 모델 준비됨' : a === 'unavailable' ? '번역 모델 사용 불가' : '녹음 시작 시 번역 모델 다운로드', a === 'unavailable' ? 'warn' : 'ok');
+    } catch (_) { setTr('번역기 확인 실패', 'warn'); }
+  })();
+})();
+</script>
+</body>
+</html>
